@@ -343,6 +343,7 @@ ALERegister<Unit> UnitMethods[] =
     { "GetStandState", &LuaUnit::GetStandState },
     { "GetVictim", &LuaUnit::GetVictim },
     { "GetSpeed", &LuaUnit::GetSpeed },
+    { "GetSpeedInMotion", &LuaUnit::GetSpeedInMotion },
     { "GetSpeedRate", &LuaUnit::GetSpeedRate },
     { "GetStat", &LuaUnit::GetStat },
     { "GetBaseSpellPower", &LuaUnit::GetBaseSpellPower },
@@ -351,6 +352,17 @@ ALERegister<Unit> UnitMethods[] =
     { "GetMovementType", &LuaUnit::GetMovementType },
     { "GetAttackers", &LuaUnit::GetAttackers },
     { "GetThreat", &LuaUnit::GetThreat },
+    { "IsImmunedToSpell", &LuaUnit::IsImmunedToSpell },
+    { "GetMechanicImmunityMask", &LuaUnit::GetMechanicImmunityMask },
+    { "IsImmuneToMechanic", &LuaUnit::IsImmuneToMechanic },
+    { "MeleeMissChance", &LuaUnit::MeleeMissChance },
+    { "MeleeDodgeChance", &LuaUnit::MeleeDodgeChance },
+    { "MeleeParryChance", &LuaUnit::MeleeParryChance },
+    { "CalcArmorReducedDamage", &LuaUnit::CalcArmorReducedDamage },
+    { "CalcAbilityDamage", &LuaUnit::CalcAbilityDamage },
+    { "GetBlockChanceAgainst", &LuaUnit::CalcAbilityDamage },
+    { "GetUnitBlockChance", &LuaUnit::GetUnitBlockChance },
+    { "SpellCritChanceAgainst", &LuaUnit::SpellCritChanceAgainst },
 
     // Setters
     { "SetFaction", &LuaUnit::SetFaction },
@@ -422,6 +434,7 @@ ALERegister<Unit> UnitMethods[] =
     // {"IsFlying", &LuaUnit::IsFlying},                                // :IsFlying() - UNDOCUMENTED
     { "IsStopped", &LuaUnit::IsStopped },
     { "HasUnitState", &LuaUnit::HasUnitState },
+    { "HasAuraState", &LuaUnit::HasAuraState },
     { "IsQuestGiver", &LuaUnit::IsQuestGiver },
     { "IsInAccessiblePlaceFor", &LuaUnit::IsInAccessiblePlaceFor },
     { "IsVendor", &LuaUnit::IsVendor },

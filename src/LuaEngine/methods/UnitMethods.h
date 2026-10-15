@@ -63,6 +63,473 @@ namespace LuaUnit
         unit->ApplySpellImmune(0, 5, immunity, apply);
         return 0;
     }
+
+    /**  
+    * Returns true if the [Unit] is immune to the given spell.  
+    * Covers mechanic immunities, school immunities and aura-based immunities (e.g. Divine Shield).  
+    *  
+    * @param uint32 spellId : entry of the spell to check  
+    * @param [Unit] caster = nil : optional caster  
+    * @return bool isImmune  
+    */  
+    int IsImmunedToSpell(lua_State* L, Unit* unit)  
+    {  
+        uint32 spellId = ALE::CHECKVAL<uint32>(L, 2);  
+        Unit* caster = ALE::CHECKOBJ<Unit>(L, 3, false);  
+        SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId);  
+        if (!spellInfo)  
+            return 0;  
+  
+        ALE::Push(L, unit->IsImmunedToSpell(spellInfo, caster));  
+        return 1;  
+    }
+
+
+    /**
+     * Returns a bitmask of the mechanics this [Unit] is IMMUNE to.
+     *
+     * Bit i corresponds to mechanic (i+1) -- the same convention as
+     * Constants.MechanicBit in the Lua project (MECHANIC_SNARE = 11 ->
+     * 0x400). Backed by m_spellImmune[IMMUNITY_MECHANIC] (creature_template
+     * MechanicImmuneMask, boss scripts, immunity auras).
+     *
+     * @return uint32 mask : 0 = immune to nothing
+     */
+    int GetMechanicImmunityMask(lua_State* L, Unit* unit)
+    {
+        ALE::Push(L, unit->GetMechanicImmunityMask());
+        return 1;
+    }
+
+    /**
+     * Convenience: is this [Unit] immune to ONE specific mechanic?
+     *
+     * @param uint32 mechanic : enum Mechanics value (11 = SNARE, 8 = SLOW_ATTACK)
+     * @return bool isImmune
+     */
+    int IsImmuneToMechanic(lua_State* L, Unit* unit)
+    {
+        uint32 mechanic = ALE::CHECKVAL<uint32>(L, 2);
+        bool immune = mechanic > 0 && mechanic < 32
+            && (unit->GetMechanicImmunityMask() & (1u << (mechanic - 1))) != 0;
+        ALE::Push(L, immune);
+        return 1;
+    }
+
+    /**  
+    * Returns the melee miss chance (in percent) of this [Unit] attacking the victim.  
+    * Matches the core's one-roll miss step for auto-attacks and melee spells.  
+    *  
+    * @param [Unit] victim : attack target  
+    * @param uint8 attType = 0 : 0 = BASE_ATTACK, 1 = OFF_ATTACK, 2 = RANGED_ATTACK  
+    * @param uint32 spellId = 0 : 0 for white swing, or melee spell id (e.g. Heroic Strike)  
+    * @return float missChance : percent, clamped to [0, 60]  
+    */  
+    int MeleeMissChance(lua_State* L, Unit* unit)  
+    {  
+        Unit* victim   = ALE::CHECKOBJ<Unit>(L, 2);  
+        uint8 attType  = ALE::CHECKVAL<uint8>(L, 3, BASE_ATTACK);  
+        uint32 spellId = ALE::CHECKVAL<uint32>(L, 4, 0);  
+      
+        if (attType > RANGED_ATTACK)  
+            return luaL_argerror(L, 3, "valid WeaponAttackType expected");  
+      
+        int32 skillDiff = int32(unit->GetWeaponSkillValue(WeaponAttackType(attType), victim))  
+                        - int32(victim->GetMaxSkillValueForLevel(unit));  
+      
+        ALE::Push(L, unit->MeleeSpellMissChance(victim, WeaponAttackType(attType), skillDiff, spellId));  
+        return 1;  
+    }
+
+    /**  
+    * Returns the dodge chance (percent) of victim against this [Unit]'s melee attack.  
+    * Replicates the dodge branch of Unit::RollMeleeOutcomeAgainst.  
+    *  
+    * @param [Unit] victim : attack target  
+    * @param uint8 attType = 0 : 0 = BASE_ATTACK, 1 = OFF_ATTACK, 2 = RANGED_ATTACK  
+    * @return float dodgeChance  
+    */  
+    int MeleeDodgeChance(lua_State* L, Unit* unit)  
+    {  
+        Unit* victim  = ALE::CHECKOBJ<Unit>(L, 2);  
+        uint8 attType = ALE::CHECKVAL<uint8>(L, 3, BASE_ATTACK);  
+        if (attType > RANGED_ATTACK)  
+            return luaL_argerror(L, 3, "valid WeaponAttackType expected");  
+
+        const uint32 noDefenseStates =  
+        UNIT_STATE_STUNNED | UNIT_STATE_CONFUSED | UNIT_STATE_FLEEING;  
+
+        bool canDodge = !victim->HasUnitState(noDefenseStates)  
+        && !victim->IsNonMeleeSpellCast(false, false, false, false, true);  
+
+        if (canDodge && victim->IsPlayer() && !victim->HasInArc(M_PI, unit))  
+            canDodge = false;  
+
+        float dodgeChance = 0.0f;  
+        if (canDodge)  
+        {  
+            dodgeChance = victim->GetUnitDodgeChance(); 
+
+            if (Player* plr = unit->ToPlayer())  
+                dodgeChance -= plr->GetExpertiseDodgeOrParryReduction(WeaponAttackType(attType));  
+            else  
+            dodgeChance -= unit->GetTotalAuraModifier(SPELL_AURA_MOD_EXPERTISE) * 0.25f;  
+
+            dodgeChance += unit->GetTotalAuraModifierByMiscValue(  
+             SPELL_AURA_MOD_COMBAT_RESULT_CHANCE, VICTIMSTATE_DODGE);  
+            dodgeChance *= unit->GetTotalAuraMultiplier(SPELL_AURA_MOD_ENEMY_DODGE);  
+
+            if (dodgeChance > 0.0f)  
+            {  
+                int32 skillDiff = int32(unit->GetWeaponSkillValue(WeaponAttackType(attType), victim))  
+                - int32(victim->GetMaxSkillValueForLevel(unit));  
+            dodgeChance -= skillDiff * 0.04f;  // знак/масштаб сверь с веткой dodge в Unit.cpp  
+            }  
+        }  
+
+        ALE::Push(L, dodgeChance > 0.0f ? dodgeChance : 0.0f);  
+        return 1;  
+    }
+
+    int MeleeParryChance(lua_State* L, Unit* unit)  
+    {  
+        Unit* victim   = ALE::CHECKOBJ<Unit>(L, 2);  
+    uint8 attType  = ALE::CHECKVAL<uint8>(L, 3, BASE_ATTACK); // 0=MH, 1=OH  
+    WeaponAttackType attackType = WeaponAttackType(attType);  
+
+    float parryChance = 0.0f;
+
+    // Unit.cpp:3050 — сзади парировать нельзя  
+    if (victim->HasInArc(M_PI, unit) || victim->HasIgnoreHitDirectionAura())  
+    {  
+        // Unit.cpp:3062 — CREATURE_FLAG_EXTRA_NO_PARRY  
+        if (!victim->IsCreature() ||  
+            !victim->ToCreature()->HasFlagsExtra(CREATURE_FLAG_EXTRA_NO_PARRY))  
+        {  
+            parryChance = victim->GetUnitParryChance(); // Unit.cpp:3530  
+
+            // Unit.cpp:3056-3060 — экспертиза атакера  
+            if (unit->IsPlayer())  
+                parryChance -= unit->ToPlayer()->GetExpertiseDodgeOrParryReduction(attackType);  
+            else  
+            parryChance -= unit->GetTotalAuraModifier(SPELL_AURA_MOD_EXPERTISE) * 0.25f;  
+
+            // Unit.cpp:3066-3068 — каст/стан цели  
+            if (victim->IsNonMeleeSpellCast(false, false, true) ||  
+                victim->HasUnitState(UNIT_STATE_CONTROLLED))  
+                parryChance = 0.0f;  
+
+            // Unit.cpp:2996, 3071 — skill bonus 0.04%/ед.  
+            if (parryChance > 0.0f)  
+            {  
+                int32 skillBonus = 4 * (int32(unit->GetWeaponSkillValue(attackType, victim))  
+                    - int32(victim->GetMaxSkillValueForLevel(unit)));  
+                parryChance -= skillBonus * 0.01f;  
+            }  
+        }  
+    }  
+
+        ALE::Push(L, parryChance > 0.0f ? parryChance : 0.0f);  
+        return 1;  
+    }
+
+    /**  
+    * Returns damage reduced by the victim's armor, as calculated by the core.  
+    *  
+    * <pre>  
+    * enum WeaponAttackType  
+    * {  
+    *     BASE_ATTACK   = 0,  
+    *     OFF_ATTACK    = 1,  
+    *     RANGED_ATTACK = 2,  
+    *     MAX_ATTACK    = 3  
+    * };  
+    * </pre>  
+    *  
+    * @param [Unit] victim : unit whose armor reduces the damage  
+    * @param uint32 damage : raw damage before armor  
+    * @param uint32 spell = 0 : spell entry whose modifiers (SPELLMOD_IGNORE_ARMOR etc.) apply; 0 for melee/autoattack  
+    * @param [WeaponAttackType] attackType = MAX_ATTACK  
+    * @return uint32 damage : damage after armor reduction  
+    */  
+    int CalcArmorReducedDamage(lua_State* L, Unit* unit)  
+    {  
+        Unit* victim = ALE::CHECKOBJ<Unit>(L, 2);  
+        uint32 damage = ALE::CHECKVAL<uint32>(L, 3);  
+        uint32 spellId = ALE::CHECKVAL<uint32>(L, 4, 0);  
+        uint8 attackType = ALE::CHECKVAL<uint8>(L, 5, MAX_ATTACK);  
+
+        if (attackType > MAX_ATTACK)  
+            return luaL_argerror(L, 5, "valid WeaponAttackType expected");  
+
+        SpellInfo const* spellInfo = spellId ? sSpellMgr->GetSpellInfo(spellId) : nullptr;  
+        if (spellId && !spellInfo)  
+            return luaL_argerror(L, 4, "valid spell entry expected");  
+
+        ALE::Push(L, Unit::CalcArmorReducedDamage(unit, victim, damage, spellInfo, unit->GetLevel(), (WeaponAttackType)attackType));  
+        return 1;  
+    }
+
+    /**  
+    * Детерминированный расчет среднего урона способности/автоатаки по цели:  
+    * учитывает модификаторы кастера/цели и броню цели,  
+    * НЕ учитывает miss/dodge/parry/block/glancing/crit/absorb/resist-роллы.  
+    *  
+    * @param [Unit] victim  
+    * @param uint32 spell = 0 : 0 = автоатака  
+    * @param uint8 attackType = 0 : BASE_ATTACK(0)/OFF_ATTACK(1)/RANGED_ATTACK(2), только для автоатаки  
+    * @return uint32 damage : средний урон после брони; 0 если недамажный спелл  
+    */  
+  
+    // Средний урон оружия вместо urand(min,max) в CalculateDamage (Unit.cpp:3227)  
+    static float AvgWeaponDamage(Unit* unit, WeaponAttackType at, bool normalized, bool addTotalPct)  
+    {  
+        float minD = 0.f, maxD = 0.f;  
+        for (uint8 i = 0; i < MAX_ITEM_PROTO_DAMAGES; ++i)  
+        {  
+            float mn, mx;  
+            unit->CalculateMinMaxDamage(at, normalized, addTotalPct, mn, mx, i);  
+            minD += mn;  
+            maxD += mx;  
+        }  
+        return (minD + maxD) / 2.0f;  
+    }  
+      
+    // Матожидание поинтов эффекта без irand(DieSides) из CalcValue  
+    static float AvgEffectPoints(SpellInfo const* si, uint8 effIdx)  
+    {  
+        SpellEffectInfo const& eff = si->Effects[effIdx];  
+        float bp = float(eff.BasePoints);  
+        int32 dice = int32(eff.DieSides);  
+        if (dice > 0)  
+            bp += (1.0f + dice) / 2.0f;      // среднее irand(1, dice)  
+        else if (dice < 0)  
+            bp += (dice + 1.0f) / 2.0f;      // среднее irand(dice, 1)  
+        return bp;  
+    }  
+      
+    int CalcAbilityDamage(lua_State* L, Unit* unit)  
+    {  
+        Unit* victim     = ALE::CHECKOBJ<Unit>(L, 2);  
+        uint32 spellId   = ALE::CHECKVAL<uint32>(L, 3, 0);  
+        uint8 attackType = ALE::CHECKVAL<uint8>(L, 4, BASE_ATTACK);  
+      
+        if (attackType >= MAX_ATTACK)  
+            return luaL_argerror(L, 4, "valid WeaponAttackType expected");  
+        if (!victim || !victim->IsAlive())  
+            { ALE::Push(L, 0); return 1; }  
+      
+        // ---------- автоатака ----------  
+        if (!spellId)  
+        {  
+            float avg = AvgWeaponDamage(unit, (WeaponAttackType)attackType, false, true);  
+            uint32 dmg = unit->MeleeDamageBonusDone(victim, uint32(avg), (WeaponAttackType)attackType);  
+            dmg = victim->MeleeDamageBonusTaken(unit, dmg, (WeaponAttackType)attackType);  
+      
+            SpellSchoolMask sm = unit->GetMeleeDamageSchoolMask((WeaponAttackType)attackType, 0);  
+            if (Unit::IsDamageReducedByArmor(sm))  
+                dmg = Unit::CalcArmorReducedDamage(unit, victim, dmg, nullptr, 0, (WeaponAttackType)attackType);  
+      
+            ALE::Push(L, dmg);  
+            return 1;  
+        }  
+      
+        // ---------- спелл ----------  
+        SpellInfo const* si = sSpellMgr->GetSpellInfo(spellId);  
+        if (!si)  
+            return luaL_argerror(L, 3, "valid spell entry expected");  
+      
+        if (!si->HasAttribute(SPELL_ATTR0_CU_DIRECT_DAMAGE) &&  
+            !si->HasAura(SPELL_AURA_PERIODIC_DAMAGE))  
+            { ALE::Push(L, 0); return 1; }  
+      
+        // --- порт EffectWeaponDmg (SpellEffects.cpp:3610-3694), без роллов ---  
+        float totalDamagePercentMod  = 100.0f;  
+        float weaponDamagePercentMod = 100.0f;  
+        float spell_bonus = 0.f, fixed_bonus = 0.f;  
+        bool  normalized  = false;  
+      
+        for (uint8 j = 0; j < MAX_SPELL_EFFECTS; ++j)  
+        {  
+            switch (si->Effects[j].Effect)  
+            {  
+            case SPELL_EFFECT_WEAPON_DAMAGE:  
+            case SPELL_EFFECT_WEAPON_DAMAGE_NOSCHOOL:  
+                fixed_bonus += AvgEffectPoints(si, j);  
+                break;  
+            case SPELL_EFFECT_NORMALIZED_WEAPON_DMG:  
+                fixed_bonus += AvgEffectPoints(si, j);  
+                normalized = true;  
+                break;  
+            case SPELL_EFFECT_WEAPON_PERCENT_DAMAGE:  
+                ApplyPct(weaponDamagePercentMod, AvgEffectPoints(si, j));  
+                break;  
+            case SPELL_EFFECT_SCHOOL_DAMAGE:  
+                spell_bonus += AvgEffectPoints(si, j);  
+                break;  
+            default:  
+                break;  
+            }  
+        }  
+      
+        bool isPhysical = (si->GetSchoolMask() & SPELL_SCHOOL_MASK_NORMAL);  
+        float dmg;  
+      
+        if (isPhysical || fixed_bonus != 0.f || weaponDamagePercentMod != 100.0f)  
+        {  
+            // weapon-based пайплайн (EffectWeaponDmg)  
+            if (isPhysical && (fixed_bonus != 0.f || spell_bonus != 0.f))  
+            {  
+                float wtp = unit->GetPctModifierValue(UNIT_MOD_DAMAGE_MAINHAND, TOTAL_PCT);  
+                fixed_bonus *= wtp;  
+                spell_bonus *= wtp;  
+            }  
+            float wd = AvgWeaponDamage(unit, BASE_ATTACK, normalized, isPhysical);  
+            wd += fixed_bonus;  
+            ApplyPct(wd, weaponDamagePercentMod);  
+            wd += spell_bonus;  
+            ApplyPct(wd, totalDamagePercentMod);  
+            dmg = std::max(wd, 0.0f);  
+            dmg = float(unit->MeleeDamageBonusDone(victim, uint32(dmg), BASE_ATTACK, si, (SpellSchoolMask)si->GetSchoolMask()));  
+            dmg = float(victim->MeleeDamageBonusTaken(unit, uint32(dmg), BASE_ATTACK, si, (SpellSchoolMask)si->GetSchoolMask()));  
+        }  
+        else  
+        {  
+            // magic school damage пайплайн (EffectSchoolDMG)  
+            uint32 base = uint32(std::max(spell_bonus, 0.0f));  
+            base = unit->SpellDamageBonusDone(victim, si, base, SPELL_DIRECT_DAMAGE, EFFECT_0);  
+            base = victim->SpellDamageBonusTaken(unit, si, base, SPELL_DIRECT_DAMAGE);  
+            dmg = float(base);  
+        }  
+      
+        // --- митигейшн цели: только броня ---  
+        if (Unit::IsDamageReducedByArmor((SpellSchoolMask)si->GetSchoolMask(), si))  
+            dmg = float(Unit::CalcArmorReducedDamage(unit, victim, uint32(dmg), si, 0, BASE_ATTACK));  
+      
+        ALE::Push(L, uint32(std::max(dmg, 0.0f)));  
+        return 1;  
+    }
+
+    /**  
+    * Returns the [Unit]'s base block chance.  
+    *  
+    * @return float blockChance  
+    */  
+    int GetUnitBlockChance(lua_State* L, Unit* unit)  
+    {  
+        ALE::Push(L, unit->GetUnitBlockChance());  
+        return 1;  
+    }
+
+    int GetBlockChanceAgainst(lua_State* L, Unit* attacker)  
+    {  
+        Unit* victim      = ALE::CHECKOBJ<Unit>(L, 2);  
+        uint32 spellId    = ALE::CHECKVAL<uint32>(L, 3, 0);  
+        uint32 attackType = ALE::CHECKVAL<uint32>(L, 4, BASE_ATTACK);  
+      
+        if (!victim || attacker == victim)  
+        {  
+            ALE::Push(L, 0.0f);  
+            return 1;  
+        }  
+        if (attackType >= MAX_ATTACK)  
+            return luaL_argerror(L, 4, "valid WeaponAttackType expected");  
+      
+        SpellInfo const* si = spellId ? sSpellMgr->GetSpellInfo(spellId) : nullptr;  
+        if (spellId && !si)  
+            return luaL_argerror(L, 3, "valid spell entry expected");  
+      
+        // Спеллы без активной защиты / гарантированного хита — Unit.cpp:3292-3294  
+        if (si && (si->HasAttribute(SPELL_ATTR0_NO_ACTIVE_DEFENSE) ||  
+                   si->HasAttribute(SPELL_ATTR3_ALWAYS_HIT)))  
+        {  
+            ALE::Push(L, 0.0f);  
+            return 1;  
+        }  
+      
+        // Блок только при атаке в лоб — Unit.cpp:3296  
+        if (!victim->HasIgnoreHitDirectionAura() && !victim->HasInArc(M_PI, attacker))  
+        {  
+            ALE::Push(L, 0.0f);  
+            return 1;  
+        }  
+      
+        // CREATURE_FLAG_EXTRA_NO_BLOCK — Unit.cpp:3298-3301  
+        if (victim->IsCreature() &&  
+            victim->ToCreature()->HasFlagsExtra(CREATURE_FLAG_EXTRA_NO_BLOCK))  
+        {  
+            ALE::Push(L, 0.0f);  
+            return 1;  
+        }  
+      
+        // База: существо = 5.0 + ауры; игрок = PLAYER_BLOCK_PERCENTAGE — Unit.cpp:3884-3908  
+        float chance = victim->GetUnitBlockChance();  
+      
+        // Поправка на навык: (attackerSkill − victimMaxSkill) * 0.04 — Unit.cpp:3304  
+        uint32 attackerSkill = attacker->GetWeaponSkillValue((WeaponAttackType)attackType, victim);  
+        uint32 victimSkill   = victim->GetMaxSkillValueForLevel(attacker);  
+        chance += (int32(attackerSkill) - int32(victimSkill)) * 0.04f;  
+      
+        // Нельзя блокировать при касте/контроле — Unit.cpp:3306-3308  
+        if (chance < 0.0f ||  
+            victim->IsNonMeleeSpellCast(false, false, true) ||  
+            victim->HasUnitState(UNIT_STATE_CONTROLLED))  
+            chance = 0.0f;  
+      
+        // Отладка — уберите после проверки  
+        LOG_INFO("misc", "GBCA: attacker={}({}) victim={}({}) base={} skill={} vs {} chance={}",  
+            attacker->GetName(), attacker->IsPlayer() ? "Player" : "Creature",  
+            victim->GetName(),   victim->IsPlayer()   ? "Player" : "Creature",  
+            victim->GetUnitBlockChance(), attackerSkill, victimSkill, chance);  
+        #include "Chat.h"   // ChatHandler — если ещё не подключён  
+  
+        // Отладка — уберите после проверки  
+        if (Player* plr = attacker->ToPlayer())  
+        {  
+            std::string msg = Acore::StringFormat(  
+                "GBCA: victim={} base={} skill={} vs {} chance={}",  
+                victim->GetName(),  
+                victim->GetUnitBlockChance(),  
+                attackerSkill, victimSkill, chance);  
+            ChatHandler(plr->GetSession()).SendSysMessage(msg.c_str());  
+        }
+      
+        ALE::Push(L, chance);  
+        return 1;  
+    }
+
+    int SpellCritChanceAgainst(lua_State* L, Unit* unit)  
+    {  
+        Unit* victim  = ALE::CHECKOBJ<Unit>(L, 2);  
+        uint8 attType = ALE::CHECKVAL<uint8>(L, 4, BASE_ATTACK);  
+        WeaponAttackType at = WeaponAttackType(attType);  
+      
+        float critChance;  
+        if (lua_isnoneornil(L, 3))  
+        {  
+            // автоатака  
+            critChance = unit->GetUnitCriticalChance(at, victim);  
+        }  
+        else  
+        {  
+            uint32 spellId = ALE::CHECKVAL<uint32>(L, 3);  
+            SpellInfo const* si = sSpellMgr->GetSpellInfo(spellId);  
+            if (!si)  
+                return luaL_argerror(L, 3, "valid spell entry expected");  
+      
+            // ranged-спеллы считаются по RANGED_ATTACK, остальное — по переданному attType  
+            if (si->DmgClass == SPELL_DAMAGE_CLASS_RANGED)  
+                at = RANGED_ATTACK;  
+      
+            float done = unit->SpellDoneCritChance(victim, si,  
+                (SpellSchoolMask)si->GetSchoolMask(), at, false);  
+            critChance = victim->SpellTakenCritChance(unit, si,  
+                (SpellSchoolMask)si->GetSchoolMask(), done, at, false);  
+        }  
+      
+        ALE::Push(L, std::max(0.0f, critChance));  
+        return 1;  
+    }
     
     /**
      * The [Unit] modifies a specific stat
@@ -531,6 +998,24 @@ namespace LuaUnit
         uint32 state = ALE::CHECKVAL<uint32>(L, 2);
         ALE::Push(L, unit->HasUnitState(state));
         return 1;
+    }
+
+    /**  
+     * Returns true if the [Unit] has the given aura state.  
+     *  
+     * @param [AuraStateType] state : an aura state  
+     * @param [SpellInfo] spellInfo = nil : spell being checked, used by the core to resolve per-caster aura states  
+     * @param [Unit] caster = nil : unit whose aura states should be counted (usually the spell's target)  
+     * @return bool hasState  
+     */  
+    int HasAuraState(lua_State* L, Unit* unit)  
+    {  
+        uint32 state            = ALE::CHECKVAL<uint32>(L, 2);  
+        SpellInfo const* info   = ALE::CHECKOBJ<SpellInfo>(L, 3, false);  
+        Unit const* caster      = ALE::CHECKOBJ<Unit>(L, 4, false);  
+  
+        ALE::Push(L, unit->HasAuraState(static_cast<AuraStateType>(state), info, caster));  
+        return 1;  
     }
 
     /*int IsVisible(lua_State* L, Unit* unit)
@@ -1266,10 +1751,17 @@ namespace LuaUnit
         uint32 type = ALE::CHECKVAL<uint32>(L, 2);
         if (type >= MAX_MOVE_TYPE)
             return luaL_argerror(L, 2, "valid UnitMoveType expected");
-
         ALE::Push(L, unit->GetSpeed((UnitMoveType)type));
-
         return 1;
+    }
+
+    int GetSpeedInMotion(lua_State* L, Unit* unit)  
+    {  
+    if (!unit->movespline->Finalized())  
+        ALE::Push(L, unit->movespline->Velocity());  
+    else  
+        ALE::Push(L, unit->GetSpeed(unit->m_movementInfo.GetSpeedType()));  
+        return 1;  
     }
 
     /**
