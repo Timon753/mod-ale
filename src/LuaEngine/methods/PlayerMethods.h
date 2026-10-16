@@ -3163,6 +3163,77 @@ namespace LuaPlayer
         player->AutoUnequipOffhandIfNeed();
         return 1;
     }
+
+    /**
+     * Swaps two inventory/equipment positions, the way the client's drag-and-drop does.
+     *
+     * Unlike [EquipItem] -- whose CanEquipItem call hardcodes swap=false and therefore
+     * refuses an OCCUPIED equipment slot -- this can move a bag item INTO an occupied
+     * slot and send the displaced item back to the source position. That is what makes
+     * an in-combat weapon swap possible.
+     *
+     * Positions are (bag << 8) | slot:
+     *   equipment : bag 255 (INVENTORY_SLOT_BAG_0), slot 15 = main hand, 16 = off hand
+     *   backpack  : bag 255, slots 23..38
+     *   equipped bag N (19..22) : bag N, slots 0..size-1
+     *
+     * Example -- put a bag weapon into the main hand (the displaced weapon goes to the bag):
+     *   player:SwapItem(255 * 256 + bagSlot, 255 * 256 + 15)
+     *
+     * The core re-validates both directions and stays silent on failure, so this wrapper
+     * mirrors its pre-checks to return a truthful boolean.
+     *
+     * @param uint16 src : source position (bag << 8 | slot)
+     * @param uint16 dst : destination position (bag << 8 | slot)
+     * @return bool ok : true when the core accepted the swap
+     */
+    int SwapItem(lua_State* L, Player* player)
+    {
+        uint32 srcRaw = ALE::CHECKVAL<uint32>(L, 2);
+        uint32 dstRaw = ALE::CHECKVAL<uint32>(L, 3);
+
+        if (srcRaw > 0xFFFF || dstRaw > 0xFFFF || srcRaw == dstRaw)
+        {
+            ALE::Push(L, false);
+            return 1;
+        }
+
+        uint16 const src = uint16(srcRaw);
+        uint16 const dst = uint16(dstRaw);
+        uint8 const srcbag = uint8(src >> 8);
+        uint8 const srcslot = uint8(src & 255);
+        uint8 const dstbag = uint8(dst >> 8);
+        uint8 const dstslot = uint8(dst & 255);
+
+        Item* pSrcItem = player->GetItemByPos(srcbag, srcslot);
+        if (!pSrcItem)
+        {
+            ALE::Push(L, false);
+            return 1;
+        }
+
+        InventoryResult msg = EQUIP_ERR_OK;
+        if (Player::IsEquipmentPos(dst))
+        {
+            uint16 eDest = 0;
+            msg = player->CanEquipItem(dstslot, eDest, pSrcItem, true);
+        }
+        else
+        {
+            ItemPosCountVec sDest;
+            msg = player->CanStoreItem(dstbag, dstslot, sDest, pSrcItem, true);
+        }
+
+        if (msg != EQUIP_ERR_OK)
+        {
+            ALE::Push(L, false);
+            return 1;
+        }
+
+        player->SwapItem(src, dst);
+        ALE::Push(L, true);
+        return 1;
+    }
     
     /**
      * Returns true if the player can equip the given [Item] or item entry to the given slot, false otherwise.
